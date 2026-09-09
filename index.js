@@ -1,202 +1,189 @@
 (() => {
   const { metro, storage, ui, logger } = vendetta;
   const React = metro.common.React;
-  const ReactNative = metro.common.ReactNative;
+  const RN = metro.common.ReactNative;
   const Forms = ui?.components?.Forms;
-  const patches = [];
+  const unpatches = [];
 
-  function profiles() {
-    return storage.profiles && typeof storage.profiles === "object"
-      ? storage.profiles
-      : {};
-  }
-
-  function getTarget(id) {
-    if (!id) return null;
-    return profiles()[String(id)] || null;
-  }
-
-  function patchMethod(mod, name, wrapper) {
-    if (!mod || typeof mod[name] !== "function") return;
-    const original = mod[name];
-
-    mod[name] = function (...args) {
-      return wrapper.call(this, original, args);
-    };
-
-    patches.push(() => {
-      mod[name] = original;
-    });
-  }
-
-  function findUserId(args) {
-    for (const a of args) {
-      if (a && typeof a === "object" && a.id) return String(a.id);
+  function readProfiles() {
+    try {
+      const raw = storage.localProfilesJSON;
+      if (!raw) return {};
+      const value = JSON.parse(raw);
+      return value && typeof value === "object" ? value : {};
+    } catch {
+      return {};
     }
+  }
 
-    for (const a of args) {
-      if (typeof a === "string" && /^\d{15,22}$/.test(a)) return a;
+  function writeProfiles(value) {
+    storage.localProfilesJSON = JSON.stringify(value);
+  }
+
+  function getOverride(id) {
+    return id ? readProfiles()[String(id)] || null : null;
+  }
+
+  function findId(args) {
+    for (const arg of args) {
+      if (arg && typeof arg === "object" && arg.id) return String(arg.id);
     }
-
+    for (const arg of args) {
+      if (typeof arg === "string" && /^\d{15,22}$/.test(arg)) return arg;
+    }
     return null;
   }
 
-  function applyPatches() {
-    // Avatar: same general approach used by working avatar override plugins.
-    try {
-      const avatarModule = metro.findByProps("getUserAvatarURL");
+  function replaceMethod(mod, key, fn) {
+    if (!mod || typeof mod[key] !== "function") return;
+    const original = mod[key];
+    mod[key] = function (...args) {
+      return fn.call(this, original, args);
+    };
+    unpatches.push(() => { mod[key] = original; });
+  }
 
-      if (avatarModule) {
-        patchMethod(avatarModule, "getUserAvatarURL", function (original, args) {
-          const id = findUserId(args);
-          const p = getTarget(id);
+  function applyAvatarPatch() {
+    const avatarModule = metro.findByProps("getUserAvatarURL");
+    if (!avatarModule) return;
 
-          if (p?.avatarUrl) return p.avatarUrl;
-          return original.apply(this, args);
-        });
+    if (typeof avatarModule.getUserAvatarSource === "function") {
+      replaceMethod(avatarModule, "getUserAvatarSource", function (original, args) {
+        const result = original.apply(this, args);
+        const ov = getOverride(findId(args));
+        if (!ov?.avatarUrl) return result;
+        return result && typeof result === "object"
+          ? { ...result, uri: ov.avatarUrl }
+          : { uri: ov.avatarUrl };
+      });
+    }
 
-        if (typeof avatarModule.getUserAvatarSource === "function") {
-          patchMethod(avatarModule, "getUserAvatarSource", function (original, args) {
+    replaceMethod(avatarModule, "getUserAvatarURL", function (original, args) {
+      const ov = getOverride(findId(args));
+      return ov?.avatarUrl || original.apply(this, args);
+    });
+  }
+
+  function applyBannerPatches() {
+    const names = [
+      "getUserBannerURL",
+      "getUserBannerUrl",
+      "getBannerURL",
+      "getBannerUrl",
+      "getUserBannerSource"
+    ];
+
+    for (const name of names) {
+      try {
+        const mods = metro.findByPropsAll(name) || [];
+        for (const mod of mods) {
+          replaceMethod(mod, name, function (original, args) {
             const result = original.apply(this, args);
-            const id = findUserId(args);
-            const p = getTarget(id);
+            const ov = getOverride(findId(args));
+            if (!ov?.bannerUrl) return result;
 
-            if (!p?.avatarUrl) return result;
-
-            if (result && typeof result === "object") {
-              return { ...result, uri: p.avatarUrl };
+            if (name.toLowerCase().includes("source")) {
+              return result && typeof result === "object"
+                ? { ...result, uri: ov.bannerUrl }
+                : { uri: ov.bannerUrl };
             }
-
-            return { uri: p.avatarUrl };
+            return ov.bannerUrl;
           });
         }
-      }
-    } catch (e) {
-      try { logger.error("Local Profiles: avatar patch failed", e); } catch {}
+      } catch {}
     }
+  }
 
-    // Banner: only patch a dedicated URL helper if this Discord build exposes it.
-    try {
-      const bannerModules = metro.findByPropsAll("getUserBannerURL") || [];
-
-      for (const mod of bannerModules) {
-        patchMethod(mod, "getUserBannerURL", function (original, args) {
-          const id = findUserId(args);
-          const p = getTarget(id);
-
-          if (p?.bannerUrl) return p.bannerUrl;
-          return original.apply(this, args);
-        });
-      }
-    } catch (e) {
-      try { logger.error("Local Profiles: banner patch failed", e); } catch {}
-    }
-
-    // Name: patch display-name helper functions only. Never patch UserStore.
-    try {
-      for (const method of ["getUserDisplayName", "getDisplayName"]) {
-        const modules = metro.findByPropsAll(method) || [];
-
-        for (const mod of modules) {
-          patchMethod(mod, method, function (original, args) {
+  function applyNamePatches() {
+    for (const name of ["getUserDisplayName", "getDisplayName"]) {
+      try {
+        const mods = metro.findByPropsAll(name) || [];
+        for (const mod of mods) {
+          replaceMethod(mod, name, function (original, args) {
             const result = original.apply(this, args);
-            const id = findUserId(args);
-            const p = getTarget(id);
-
-            return p?.displayName || result;
+            const ov = getOverride(findId(args));
+            return ov?.displayName || result;
           });
         }
-      }
-    } catch (e) {
-      try { logger.error("Local Profiles: name patch failed", e); } catch {}
+      } catch {}
     }
   }
 
   function Settings() {
-    if (!Forms || !ReactNative?.ScrollView) return null;
-
+    if (!Forms || !RN?.ScrollView) return null;
     const { FormInput, FormRow, FormDivider } = Forms;
 
-    const initialId = String(storage.lastUserId || "");
-    const initial = getTarget(initialId) || {};
-
-    const [userId, setUserId] = React.useState(initialId);
-    const [displayName, setDisplayName] = React.useState(initial.displayName || "");
-    const [avatarUrl, setAvatarUrl] = React.useState(initial.avatarUrl || "");
-    const [bannerUrl, setBannerUrl] = React.useState(initial.bannerUrl || "");
+    const [userId, setUserId] = React.useState(String(storage.lastLocalProfileId || ""));
+    const [displayName, setDisplayName] = React.useState("");
+    const [avatarUrl, setAvatarUrl] = React.useState("");
+    const [bannerUrl, setBannerUrl] = React.useState("");
     const [status, setStatus] = React.useState("");
 
+    const load = idValue => {
+      const id = String(idValue || "").trim();
+      if (!/^\d{15,22}$/.test(id)) return;
+      const p = readProfiles()[id];
+      if (!p) return;
+      setDisplayName(p.displayName || "");
+      setAvatarUrl(p.avatarUrl || "");
+      setBannerUrl(p.bannerUrl || "");
+      setStatus("Saved profile loaded.");
+    };
+
     React.useEffect(() => {
-      const clean = String(userId || "").trim();
-
-      if (!/^\d{15,22}$/.test(clean)) return;
-
-      const saved = getTarget(clean);
-
-      if (saved) {
-        setDisplayName(saved.displayName || "");
-        setAvatarUrl(saved.avatarUrl || "");
-        setBannerUrl(saved.bannerUrl || "");
-        setStatus("Loaded saved profile.");
-      }
-    }, [userId]);
+      if (userId) load(userId);
+    }, []);
 
     const save = () => {
       const id = String(userId || "").trim();
-
       if (!/^\d{15,22}$/.test(id)) {
-        setStatus("Enter a valid Discord user ID first.");
+        setStatus("Invalid Discord user ID.");
         return;
       }
 
-      // IMPORTANT: replace the entire top-level object so Kettu's persistent
-      // plugin storage detects the write reliably.
-      storage.profiles = {
-        ...profiles(),
-        [id]: {
-          displayName: String(displayName || "").trim(),
-          avatarUrl: String(avatarUrl || "").trim(),
-          bannerUrl: String(bannerUrl || "").trim()
-        }
+      const all = readProfiles();
+      all[id] = {
+        displayName: String(displayName || "").trim(),
+        avatarUrl: String(avatarUrl || "").trim(),
+        bannerUrl: String(bannerUrl || "").trim()
       };
 
-      storage.lastUserId = id;
-      setStatus("Saved. Reload Discord to apply.");
+      writeProfiles(all);
+      storage.lastLocalProfileId = id;
+      setStatus("Saved permanently. Reload Discord to apply.");
     };
 
     const remove = () => {
       const id = String(userId || "").trim();
-      if (!id) return;
-
-      const next = { ...profiles() };
-      delete next[id];
-
-      storage.profiles = next;
+      const all = readProfiles();
+      delete all[id];
+      writeProfiles(all);
       setDisplayName("");
       setAvatarUrl("");
       setBannerUrl("");
-      setStatus("Removed. Reload Discord to restore the original profile.");
+      setStatus("Override removed.");
     };
 
     return React.createElement(
-      ReactNative.ScrollView,
+      RN.ScrollView,
       {
         keyboardShouldPersistTaps: "handled",
         keyboardDismissMode: "interactive",
-        contentContainerStyle: {
-          paddingBottom: 420
-        }
+        contentContainerStyle: { paddingBottom: 520 }
       },
 
       React.createElement(FormRow, { label: "Discord User ID" }),
       React.createElement(FormInput, {
         placeholder: "123456789012345678",
         value: userId,
-        onChange: setUserId
+        onChange: v => {
+          setUserId(v);
+          const clean = String(v || "").trim();
+          if (/^\d{15,22}$/.test(clean)) load(clean);
+        }
       }),
 
       React.createElement(FormDivider),
-
       React.createElement(FormRow, { label: "Local display name" }),
       React.createElement(FormInput, {
         placeholder: "Optional",
@@ -205,7 +192,6 @@
       }),
 
       React.createElement(FormDivider),
-
       React.createElement(FormRow, { label: "Avatar URL" }),
       React.createElement(FormInput, {
         placeholder: "https://...",
@@ -214,7 +200,6 @@
       }),
 
       React.createElement(FormDivider),
-
       React.createElement(FormRow, { label: "Banner URL" }),
       React.createElement(FormInput, {
         placeholder: "https://...",
@@ -223,41 +208,32 @@
       }),
 
       React.createElement(FormDivider),
-
       React.createElement(FormRow, {
         label: "Save / Apply",
-        subLabel: "Stores this profile locally",
+        subLabel: "Persist this local profile",
         onPress: save
       }),
 
       React.createElement(FormRow, {
         label: "Remove saved override",
-        subLabel: "Restore the real profile after reload",
         onPress: remove
       }),
 
-      status
-        ? React.createElement(FormRow, { label: status })
-        : null
+      status ? React.createElement(FormRow, { label: status }) : null
     );
   }
 
   return {
     settings: Settings,
-
     onLoad() {
-      if (!storage.profiles || typeof storage.profiles !== "object") {
-        storage.profiles = {};
-      }
-
-      applyPatches();
-
-      try { logger.log("Local Profiles v4 loaded"); } catch {}
+      applyAvatarPatch();
+      applyBannerPatches();
+      applyNamePatches();
+      try { logger.log("Local Profiles v5 loaded"); } catch {}
     },
-
     onUnload() {
-      while (patches.length) {
-        try { patches.pop()(); } catch {}
+      while (unpatches.length) {
+        try { unpatches.pop()(); } catch {}
       }
     }
   };
