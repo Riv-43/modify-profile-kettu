@@ -1,11 +1,11 @@
 {
   "name": "Local Profiles",
-  "description": "Locally override another user's display name, avatar and banner in Kettu. Changes are visible only to you.",
+  "description": "Local avatar, banner and display-name overrides for Kettu. Changes are visible only to you.",
   "authors": [
     {
       "name": "Custom"
     }
   ],
   "main": "index.js",
-  "hash": "d17bffec72ecce97"
+  "hash": "ed35676b4349b62b"
 }
