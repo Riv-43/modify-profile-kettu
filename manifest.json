@@ -1,11 +1,11 @@
 {
   "name": "Local Profiles",
-  "description": "v8: uses Kettu's actual per-plugin persistent storage (vendetta.plugin.storage).",
+  "description": "v9: persistent local profile overrides with exact Discord getUserBannerURL banner patch.",
   "authors": [
     {
       "name": "Custom"
     }
   ],
   "main": "index.js",
-  "hash": "583670c7a14abb53"
+  "hash": "e2ac70ae23a04383"
 }

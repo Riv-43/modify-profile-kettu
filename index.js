@@ -7,12 +7,13 @@
   const unpatches = [];
 
   function patchMethod(mod, key, handler) {
-    if (!mod || typeof mod[key] !== "function") return;
+    if (!mod || typeof mod[key] !== "function") return false;
     const original = mod[key];
     mod[key] = function (...args) {
       return handler.call(this, original, args);
     };
     unpatches.push(() => { mod[key] = original; });
+    return true;
   }
 
   function applyAvatarPatch() {
@@ -47,36 +48,34 @@
     const BANNER_URL = String(storage?.bannerUrl || "");
     if (!TARGET_ID || !BANNER_URL) return;
 
-    const helperNames = [
-      "getUserBannerURL",
-      "getUserBannerUrl",
-      "getBannerURL",
-      "getBannerUrl",
-      "getUserBannerSource",
-      "getBannerSource"
-    ];
+    // This exact lookup mirrors an existing Vendetta Custom Banner plugin.
+    let bannerModule = null;
+    try {
+      bannerModule = metro.findByProps("default", "getUserBannerURL");
+    } catch {}
 
-    for (const name of helperNames) {
-      try {
-        const mods = metro.findByPropsAll(name) || [];
-        for (const mod of mods) {
-          patchMethod(mod, name, function (original, args) {
-            const first = args[0];
-            const id = first?.id ? String(first.id) : (typeof first === "string" ? first : null);
-
-            if (id === TARGET_ID) {
-              if (name.toLowerCase().includes("source")) {
-                const result = original.apply(this, args);
-                if (result && typeof result === "object") return { ...result, uri: BANNER_URL };
-                return { uri: BANNER_URL };
-              }
-              return BANNER_URL;
-            }
-            return original.apply(this, args);
-          });
-        }
-      } catch {}
+    // Fallback for builds where default isn't on the same module.
+    if (!bannerModule) {
+      try { bannerModule = metro.findByProps("getUserBannerURL"); } catch {}
     }
+
+    if (!bannerModule || typeof bannerModule.getUserBannerURL !== "function") {
+      try { logger.error("Local Profiles v9: getUserBannerURL module not found"); } catch {}
+      return;
+    }
+
+    patchMethod(bannerModule, "getUserBannerURL", function (original, args) {
+      const user = args[0];
+
+      // Exact signature used by Discord's banner helper: first arg is user.
+      if (user?.id === TARGET_ID) {
+        return BANNER_URL;
+      }
+
+      return original.apply(this, args);
+    });
+
+    try { logger.log("Local Profiles v9: banner helper patched"); } catch {}
   }
 
   function applyNamePatch() {
@@ -86,15 +85,15 @@
 
     for (const name of ["getUserDisplayName", "getDisplayName"]) {
       try {
-        const mods = metro.findByPropsAll(name) || [];
-        for (const mod of mods) {
-          patchMethod(mod, name, function (original, args) {
-            const first = args[0];
-            const id = first?.id ? String(first.id) : (typeof first === "string" ? first : null);
-            if (id === TARGET_ID) return LOCAL_NAME;
-            return original.apply(this, args);
-          });
-        }
+        const mod = metro.findByProps(name);
+        if (!mod) continue;
+
+        patchMethod(mod, name, function (original, args) {
+          const first = args[0];
+          const id = first?.id ? String(first.id) : (typeof first === "string" ? first : null);
+          if (id === TARGET_ID) return LOCAL_NAME;
+          return original.apply(this, args);
+        });
       } catch {}
     }
   }
@@ -154,23 +153,22 @@
 
       React.createElement(FormRow, {
         label: "Saved automatically",
-        subLabel: "Uses Kettu's per-plugin persistent MMKV storage. Reload Discord after editing."
+        subLabel: "v9 uses Discord's exact getUserBannerURL helper. Reload Discord after editing."
       })
     );
   }
 
   return {
     settings: Settings,
+
     onLoad() {
-      if (!storage) {
-        try { logger.error("Local Profiles: vendetta.plugin.storage unavailable"); } catch {}
-        return;
-      }
+      if (!storage) return;
       applyAvatarPatch();
       applyBannerPatch();
       applyNamePatch();
-      try { logger.log("Local Profiles v8 loaded"); } catch {}
+      try { logger.log("Local Profiles v9 loaded"); } catch {}
     },
+
     onUnload() {
       while (unpatches.length) {
         try { unpatches.pop()(); } catch {}
