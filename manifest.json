@@ -1,11 +1,11 @@
 {
   "name": "Local Profiles",
-  "description": "v7: removes incompatible useProxy call; flat persistent storage with local avatar/banner/name hooks.",
+  "description": "v8: uses Kettu's actual per-plugin persistent storage (vendetta.plugin.storage).",
   "authors": [
     {
       "name": "Custom"
     }
   ],
   "main": "index.js",
-  "hash": "13408e985e8a3049"
+  "hash": "583670c7a14abb53"
 }
