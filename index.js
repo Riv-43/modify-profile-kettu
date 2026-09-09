@@ -1,29 +1,24 @@
 (() => {
-  const { patcher, metro, storage, ui, logger } = vendetta;
+  const { patcher, metro, storage, logger } = vendetta;
   const React = metro.common.React;
+  const RN = metro.common.ReactNative;
+  const { View, Text, Pressable, Alert, ScrollView } = RN;
 
-  const DEFAULTS = {
-    profiles: {}
-  };
-
-  function getStore() {
-    if (!storage) return DEFAULTS;
+  function store() {
     if (!storage.profiles) storage.profiles = {};
-    return storage;
+    return storage.profiles;
   }
 
-  function getOverride(userId) {
-    return getStore().profiles?.[String(userId)] || null;
+  function getOverride(id) {
+    return store()[String(id)] || null;
   }
 
-  function setOverride(userId, data) {
-    const s = getStore();
-    s.profiles[String(userId)] = { ...(s.profiles[String(userId)] || {}), ...data };
+  function saveOverride(id, data) {
+    store()[String(id)] = { ...(store()[String(id)] || {}), ...data };
   }
 
-  function removeOverride(userId) {
-    const s = getStore();
-    delete s.profiles[String(userId)];
+  function removeOverride(id) {
+    delete store()[String(id)];
   }
 
   function transformUser(user) {
@@ -31,153 +26,186 @@
     const ov = getOverride(user.id);
     if (!ov) return user;
 
-    const next = Object.assign({}, user);
+    const u = { ...user };
 
     if (ov.username) {
-      next.username = ov.username;
-      next.globalName = ov.username;
-      next.displayName = ov.username;
+      u.username = ov.username;
+      u.globalName = ov.username;
+      u.displayName = ov.username;
     }
 
     if (ov.avatarUrl) {
-      next.avatar = null;
-      next.avatarDecoration = null;
-      next.avatarURL = ov.avatarUrl;
-      next.getAvatarURL = () => ov.avatarUrl;
+      u.avatarURL = ov.avatarUrl;
+      u.getAvatarURL = () => ov.avatarUrl;
     }
 
     if (ov.bannerUrl) {
-      next.banner = null;
-      next.bannerURL = ov.bannerUrl;
-      next.getBannerURL = () => ov.bannerUrl;
+      u.bannerURL = ov.bannerUrl;
+      u.getBannerURL = () => ov.bannerUrl;
     }
 
-    return next;
+    return u;
   }
 
   const unpatches = [];
 
-  function patchLikelyUserStores() {
-    const mods = [];
-
+  function safeAfter(method, mod, cb) {
     try {
-      mods.push(...(metro.findByPropsAll("getUser", "getUsers") || []));
+      if (mod && typeof mod[method] === "function") {
+        unpatches.push(patcher.after(method, mod, cb));
+      }
     } catch {}
-
-    for (const mod of mods) {
-      if (!mod) continue;
-
-      if (typeof mod.getUser === "function") {
-        unpatches.push(
-          patcher.after("getUser", mod, (_args, user) => transformUser(user))
-        );
-      }
-
-      if (typeof mod.getUsers === "function") {
-        unpatches.push(
-          patcher.after("getUsers", mod, (_args, users) => {
-            if (!users || typeof users !== "object") return users;
-            const copy = Array.isArray(users) ? users.slice() : { ...users };
-            for (const k in copy) copy[k] = transformUser(copy[k]);
-            return copy;
-          })
-        );
-      }
-    }
   }
 
-  function patchProfileFetches() {
-    const candidates = [];
+  function patchStores() {
     try {
-      candidates.push(...(metro.findByPropsAll("getUserProfile") || []));
+      for (const mod of metro.findByPropsAll("getUser", "getUsers") || []) {
+        safeAfter("getUser", mod, (_args, ret) => transformUser(ret));
+        safeAfter("getUsers", mod, (_args, ret) => {
+          if (!ret || typeof ret !== "object") return ret;
+          if (Array.isArray(ret)) return ret.map(transformUser);
+          const copy = { ...ret };
+          for (const k of Object.keys(copy)) copy[k] = transformUser(copy[k]);
+          return copy;
+        });
+      }
     } catch {}
 
-    for (const mod of candidates) {
-      if (!mod || typeof mod.getUserProfile !== "function") continue;
+    try {
+      for (const mod of metro.findByPropsAll("getUserProfile") || []) {
+        safeAfter("getUserProfile", mod, (args, ret) => {
+          const id = String(args?.[0] ?? "");
+          const ov = getOverride(id);
+          if (!ov || !ret || typeof ret !== "object") return ret;
 
-      unpatches.push(
-        patcher.after("getUserProfile", mod, (args, profile) => {
-          const userId = args?.[0];
-          const ov = getOverride(userId);
-          if (!ov || !profile || typeof profile !== "object") return profile;
+          const p = { ...ret };
+          if (p.user) p.user = transformUser(p.user);
 
-          const next = { ...profile };
-          if (ov.bannerUrl) next.banner = ov.bannerUrl;
-          if (ov.username && next.user) next.user = transformUser(next.user);
-          if (ov.avatarUrl && next.user) next.user = transformUser(next.user);
-          return next;
-        })
-      );
-    }
+          // Discord profile objects have used several banner fields over time.
+          if (ov.bannerUrl) {
+            p.banner = ov.bannerUrl;
+            p.bannerURL = ov.bannerUrl;
+            p.bannerUrl = ov.bannerUrl;
+          }
+          return p;
+        });
+      }
+    } catch {}
   }
 
-  function promptText(title, placeholder, initialValue = "") {
-    return new Promise(resolve => {
-      ui.alerts.showInputAlert({
-        title,
-        placeholder,
-        value: initialValue,
-        confirmText: "Save",
-        cancelText: "Cancel",
-        onConfirm: resolve,
-        onCancel: () => resolve(null),
+  function prompt(title, message, value, cb) {
+    Alert.prompt(
+      title,
+      message,
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "OK", onPress: text => cb(text ?? "") }
+      ],
+      "plain-text",
+      value || ""
+    );
+  }
+
+  function editProfile() {
+    prompt("Local Profiles", "Discord user ID", "", id => {
+      id = String(id).trim();
+      if (!id) return;
+
+      const old = getOverride(id) || {};
+      prompt("Display name", "Leave blank to keep the real name.", old.username || "", username => {
+        prompt("Avatar URL", "Direct https:// image URL. Leave blank to keep original.", old.avatarUrl || "", avatarUrl => {
+          prompt("Banner URL", "Direct https:// image URL. Leave blank to keep original.", old.bannerUrl || "", bannerUrl => {
+            saveOverride(id, {
+              username: username.trim(),
+              avatarUrl: avatarUrl.trim(),
+              bannerUrl: bannerUrl.trim()
+            });
+            Alert.alert("Saved", "Reload Discord/Kettu to apply the local profile.");
+          });
+        });
       });
     });
   }
 
-  async function addOrEdit() {
-    const id = await promptText("Discord user ID", "e.g. 123456789012345678");
-    if (!id) return;
-
-    const current = getOverride(id) || {};
-
-    const username = await promptText("Local display name", "Leave blank to keep original", current.username || "");
-    if (username === null) return;
-
-    const avatarUrl = await promptText("Avatar URL", "https://...", current.avatarUrl || "");
-    if (avatarUrl === null) return;
-
-    const bannerUrl = await promptText("Banner URL", "https://...", current.bannerUrl || "");
-    if (bannerUrl === null) return;
-
-    setOverride(id, {
-      username: username || "",
-      avatarUrl: avatarUrl || "",
-      bannerUrl: bannerUrl || ""
+  function deleteProfile() {
+    prompt("Remove local profile", "Discord user ID", "", id => {
+      id = String(id).trim();
+      if (!id) return;
+      removeOverride(id);
+      Alert.alert("Removed", "Reload Discord/Kettu to restore the real profile.");
     });
-
-    try { ui.toasts.showToast("Local profile saved. Reload Discord."); } catch {}
   }
 
-  async function removeOne() {
-    const id = await promptText("Remove local profile", "Discord user ID");
-    if (!id) return;
-    removeOverride(id);
-    try { ui.toasts.showToast("Local profile removed. Reload Discord."); } catch {}
-  }
+  function ProfileList() {
+    const profiles = store();
+    const ids = Object.keys(profiles);
 
-  const settings = {
-    render: () => React.createElement(
-      React.Fragment,
-      null,
+    return React.createElement(
+      ScrollView,
+      { contentContainerStyle: { padding: 16, gap: 12 } },
+
       React.createElement(
-        ui.components.Button,
-        { text: "Add / edit local profile", onPress: addOrEdit }
+        Pressable,
+        {
+          onPress: editProfile,
+          style: {
+            paddingVertical: 14,
+            paddingHorizontal: 16,
+            borderRadius: 12,
+            backgroundColor: "#5865F2"
+          }
+        },
+        React.createElement(Text, { style: { color: "white", fontSize: 16, fontWeight: "600" } }, "Add / edit local profile")
       ),
+
       React.createElement(
-        ui.components.Button,
-        { text: "Remove local profile", onPress: removeOne, style: { marginTop: 12 } }
-      )
-    )
-  };
+        Pressable,
+        {
+          onPress: deleteProfile,
+          style: {
+            paddingVertical: 14,
+            paddingHorizontal: 16,
+            borderRadius: 12,
+            backgroundColor: "#4E5058"
+          }
+        },
+        React.createElement(Text, { style: { color: "white", fontSize: 16, fontWeight: "600" } }, "Remove local profile")
+      ),
+
+      React.createElement(
+        Text,
+        { style: { color: "#B5BAC1", marginTop: 8, fontSize: 14 } },
+        ids.length ? `Saved profiles: ${ids.length}` : "No local profiles saved yet."
+      ),
+
+      ...ids.map(id => {
+        const p = profiles[id];
+        const label = p.username || id;
+        return React.createElement(
+          View,
+          {
+            key: id,
+            style: {
+              padding: 12,
+              borderRadius: 10,
+              backgroundColor: "#2B2D31"
+            }
+          },
+          React.createElement(Text, { style: { color: "white", fontSize: 15, fontWeight: "600" } }, label),
+          React.createElement(Text, { style: { color: "#B5BAC1", marginTop: 4, fontSize: 12 } }, id)
+        );
+      })
+    );
+  }
 
   return {
-    settings,
+    settings: ProfileList,
+
     onLoad() {
-      patchLikelyUserStores();
-      patchProfileFetches();
-      logger.log("Local Profiles loaded");
+      patchStores();
+      try { logger.log("Local Profiles v2 loaded"); } catch {}
     },
+
     onUnload() {
       for (const unpatch of unpatches.splice(0)) {
         try { unpatch(); } catch {}
