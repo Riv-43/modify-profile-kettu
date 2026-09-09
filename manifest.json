@@ -1,11 +1,11 @@
 {
   "name": "Local Profiles",
-  "description": "Local profile overrides for Kettu. v5 uses explicit JSON persistence and safer targeted patches.",
+  "description": "v6: flat persistent storage based on the working avatar plugin pattern, plus local banner/name hooks.",
   "authors": [
     {
       "name": "Custom"
     }
   ],
   "main": "index.js",
-  "hash": "0bfd339c3cab48dd"
+  "hash": "7cec3451ecf1caf9"
 }
