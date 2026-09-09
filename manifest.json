@@ -1,11 +1,11 @@
 {
   "name": "Local Profiles",
-  "description": "Local avatar, banner and display-name overrides for Kettu. Changes are visible only to you.",
+  "description": "Local avatar, banner and display-name overrides for Kettu. v4 adds explicit persistent saving and keyboard-safe spacing.",
   "authors": [
     {
       "name": "Custom"
     }
   ],
   "main": "index.js",
-  "hash": "ed35676b4349b62b"
+  "hash": "5b59a3dde15a828e"
 }
