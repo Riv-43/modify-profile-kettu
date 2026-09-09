@@ -1,11 +1,11 @@
 {
   "name": "Local Profiles",
-  "description": "v6: flat persistent storage based on the working avatar plugin pattern, plus local banner/name hooks.",
+  "description": "v7: removes incompatible useProxy call; flat persistent storage with local avatar/banner/name hooks.",
   "authors": [
     {
       "name": "Custom"
     }
   ],
   "main": "index.js",
-  "hash": "7cec3451ecf1caf9"
+  "hash": "13408e985e8a3049"
 }

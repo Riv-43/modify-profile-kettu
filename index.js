@@ -3,7 +3,6 @@
   const React = metro.common.React;
   const RN = metro.common.ReactNative;
   const Forms = ui?.components?.Forms;
-  const useProxy = vendetta.storage?.useProxy;
   const unpatches = [];
 
   function patchMethod(mod, key, handler) {
@@ -110,9 +109,29 @@
 
   function Settings() {
     if (!Forms || !RN?.ScrollView) return null;
-    if (typeof useProxy === "function") useProxy(storage);
-
     const { FormInput, FormRow, FormDivider } = Forms;
+
+    const [userId, setUserId] = React.useState(String(storage.targetUserId || ""));
+    const [displayName, setDisplayName] = React.useState(String(storage.displayName || ""));
+    const [avatarUrl, setAvatarUrl] = React.useState(String(storage.imageUrl || ""));
+    const [bannerUrl, setBannerUrl] = React.useState(String(storage.bannerUrl || ""));
+
+    const changeUserId = v => {
+      setUserId(v);
+      storage.targetUserId = v;
+    };
+    const changeDisplayName = v => {
+      setDisplayName(v);
+      storage.displayName = v;
+    };
+    const changeAvatar = v => {
+      setAvatarUrl(v);
+      storage.imageUrl = v;
+    };
+    const changeBanner = v => {
+      setBannerUrl(v);
+      storage.bannerUrl = v;
+    };
 
     return React.createElement(
       RN.ScrollView,
@@ -125,8 +144,8 @@
       React.createElement(FormRow, { label: "Discord User ID" }),
       React.createElement(FormInput, {
         placeholder: "Enter Target User ID",
-        value: storage.targetUserId || "",
-        onChange: v => { storage.targetUserId = v; }
+        value: userId,
+        onChange: changeUserId
       }),
 
       React.createElement(FormDivider),
@@ -134,8 +153,8 @@
       React.createElement(FormRow, { label: "Local display name" }),
       React.createElement(FormInput, {
         placeholder: "Optional",
-        value: storage.displayName || "",
-        onChange: v => { storage.displayName = v; }
+        value: displayName,
+        onChange: changeDisplayName
       }),
 
       React.createElement(FormDivider),
@@ -143,8 +162,8 @@
       React.createElement(FormRow, { label: "Avatar URL" }),
       React.createElement(FormInput, {
         placeholder: "Enter image URL",
-        value: storage.imageUrl || "",
-        onChange: v => { storage.imageUrl = v; }
+        value: avatarUrl,
+        onChange: changeAvatar
       }),
 
       React.createElement(FormDivider),
@@ -152,8 +171,8 @@
       React.createElement(FormRow, { label: "Banner URL" }),
       React.createElement(FormInput, {
         placeholder: "Enter banner URL",
-        value: storage.bannerUrl || "",
-        onChange: v => { storage.bannerUrl = v; }
+        value: bannerUrl,
+        onChange: changeBanner
       }),
 
       React.createElement(FormDivider),
@@ -172,7 +191,7 @@
       applyAvatarPatch();
       applyBannerPatch();
       applyNamePatch();
-      try { logger.log("Local Profiles v6 loaded"); } catch {}
+      try { logger.log("Local Profiles v7 loaded"); } catch {}
     },
 
     onUnload() {
