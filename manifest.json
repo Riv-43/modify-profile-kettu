@@ -1,11 +1,11 @@
 {
   "name": "Local Profiles",
-  "description": "v9: persistent local profile overrides with exact Discord getUserBannerURL banner patch.",
+  "description": "v10: persistent local profiles with targeted ProfileBanner rendering and bounded banner diagnostics. No store patches.",
   "authors": [
     {
       "name": "Custom"
     }
   ],
   "main": "index.js",
-  "hash": "e2ac70ae23a04383"
+  "hash": "a2011447afdbee02"
 }
