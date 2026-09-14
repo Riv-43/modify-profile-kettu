@@ -1,11 +1,11 @@
 {
   "name": "Local Profiles",
-  "description": "v10: persistent local profiles with targeted ProfileBanner rendering and bounded banner diagnostics. No store patches.",
+  "description": "v12: local profile, custom status and presence overrides with persistent settings. No UserStore patches or presence broadcasts.",
   "authors": [
     {
       "name": "Custom"
     }
   ],
   "main": "index.js",
-  "hash": "a2011447afdbee02"
+  "hash": "0ded5a7b35df8aa6"
 }

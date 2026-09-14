@@ -221,7 +221,7 @@
 
   function startCapture() {
     stopCapture();
-    report = { version: 10, startedAt: new Date().toISOString(), expectedBuild: "305.1 / 88876 (user supplied)", moduleRegistryAvailable: !!metro.modules, bannerPatchCount: bannerPatches.length, modules: [], calls: {} };
+    report = { version: 12, startedAt: new Date().toISOString(), expectedBuild: "305.1 / 88876 (user supplied)", moduleRegistryAvailable: !!metro.modules, bannerPatchCount: bannerPatches.length, modules: [], calls: {} };
     capturing = true;
     discoverBanners();
     discoveryTimer = setInterval(() => attempt(discoverBanners), 1000);
@@ -272,6 +272,137 @@
     }
   }
 
+  // Source: nexp id's Song Spotlight patches these exact profile components.
+  // Render our own local text, without cloning a class instance or changing a store.
+  const bioPatches = [];
+  const bioTargets = [];
+  const bioStats = { calls: 0, replacements: 0 };
+
+  function bioOwner(props) {
+    const candidates = [props?.userId, props?.user?.id, props?.displayProfile?.userId];
+    const ids = candidates.filter(id => typeof id === "string" && /^\d+$/.test(id));
+    return ids.length && ids.every(id => id === ids[0]) ? ids[0] : null;
+  }
+
+  function LocalBio({ text, style }) {
+    return React.createElement(RN.View, {
+      style: [style, { padding: 16, borderRadius: 12, backgroundColor: "#232428" }]
+    },
+      React.createElement(RN.Text, {
+        style: { color: "#b5bac1", fontSize: 12, fontWeight: "700", marginBottom: 8 }
+      }, "À PROPOS DE MOI"),
+      React.createElement(RN.Text, {
+        selectable: true,
+        style: { color: "#f2f3f5", fontSize: 14, lineHeight: 20 }
+      }, text)
+    );
+  }
+
+  function applyBioPatch() {
+    if (!vendetta.patcher?.after) return;
+    for (const name of ["UserProfileBio", "UserProfileAboutMeCard"]) attempt(() => {
+      const mod = metro.findByName(name, false);
+      let parent = mod;
+      let key = "default";
+      if (typeof mod?.default !== "function") {
+        if (typeof mod?.default?.type === "function") { parent = mod.default; key = "type"; }
+        else if (typeof mod?.default?.render === "function") { parent = mod.default; key = "render"; }
+        else return;
+      }
+      const undo = vendetta.patcher.after(key, parent, (args, result) => {
+        // The original component has already run its hooks exactly once.
+        // Returning undefined leaves its normal output entirely unchanged.
+        bioStats.calls++;
+        const owner = attempt(() => bioOwner(args[0]));
+        const replace = !!storage?.bioEnabled && !!targetId() && owner === targetId();
+        event(name, args, result, { replaced: replace });
+        if (!replace) return;
+        bioStats.replacements++;
+        const text = String(storage.bioText ?? "");
+        // Explicitly enabled + empty text hides the bio. Disabling restores Discord's bio.
+        if (!text) return null;
+        return React.createElement(LocalBio, { text, style: args[0]?.style });
+      });
+      bioPatches.push(undo);
+      bioTargets.push(name);
+    });
+  }
+
+  // Proven read selectors: CustomRPC reads PresenceStore.getStatus(userId)
+  // and getActivities(userId).find(activity => activity.type === 4).
+  // Never patch UserStore, dispatch presence events, or mutate store state.
+  const presenceLabels = { "": "Originale", online: "En ligne", idle: "Inactif", dnd: "Ne pas déranger", offline: "Hors ligne" };
+  const statusPatches = [];
+  const statusStats = { found: [], calls: {}, replacements: {}, unsupportedActivities: 0 };
+  let activitiesCache = new WeakMap();
+  let activitiesConfig = "";
+  const emptyActivitiesKey = {};
+
+  function configuredPresence() {
+    const value = String(storage?.localPresence || "");
+    return Object.prototype.hasOwnProperty.call(presenceLabels, value) ? value : "";
+  }
+
+  function localActivity() {
+    const text = String(storage?.customStatusText ?? "");
+    const emojiText = String(storage?.customStatusEmoji ?? "").trim();
+    if (!text && !emojiText) return null;
+    const activity = { id: "custom", name: "Custom Status", type: 4, state: text, label: text, flags: 0 };
+    if (emojiText) activity.emoji = { name: emojiText };
+    return activity;
+  }
+
+  function overrideActivities(original) {
+    if (original != null && !Array.isArray(original)) {
+      statusStats.unsupportedActivities++;
+      return original;
+    }
+    const config = JSON.stringify([targetId(), storage.customStatusText ?? "", storage.customStatusEmoji ?? ""]);
+    if (config !== activitiesConfig) {
+      activitiesCache = new WeakMap();
+      activitiesConfig = config;
+    }
+    const input = original || [];
+    const key = original || emptyActivitiesKey;
+    const cached = activitiesCache.get(key);
+    // Detect in-place array edits too; preserve activity objects for games/Spotify.
+    if (cached && cached.input.length === input.length && cached.input.every((v, i) => v === input[i])) return cached.output;
+    const custom = localActivity();
+    const output = [];
+    let inserted = false;
+    for (const activity of input) {
+      if (activity?.type === 4) {
+        if (custom && !inserted) { output.push(custom); inserted = true; }
+      } else output.push(activity);
+    }
+    if (custom && !inserted) output.push(custom);
+    activitiesCache.set(key, { input: input.slice(), output });
+    return output;
+  }
+
+  function applyStatusPatches() {
+    if (!vendetta.patcher?.after || typeof metro.findByStoreName !== "function") return;
+    const presenceStore = metro.findByStoreName("PresenceStore");
+    for (const method of ["getStatus", "getActivities"]) attempt(() => {
+      if (typeof presenceStore?.[method] !== "function") return;
+      statusStats.calls[method] = 0;
+      statusStats.replacements[method] = 0;
+      const undo = vendetta.patcher.after(method, presenceStore, (args, result) => {
+        // All other users receive the exact original reference/value.
+        if (!targetId() || args[0] !== targetId()) return;
+        statusStats.calls[method]++;
+        const enabled = method === "getStatus" ? !!configuredPresence() : !!storage.customStatusEnabled;
+        event(`PresenceStore.${method}`, args, result, { overrideEnabled: enabled });
+        if (!enabled) return;
+        const next = method === "getStatus" ? configuredPresence() : overrideActivities(result);
+        if (next !== result) statusStats.replacements[method]++;
+        return next;
+      });
+      statusPatches.push(undo);
+      statusStats.found.push(method);
+    });
+  }
+
   function Settings() {
     if (!storage || !Forms || !RN?.ScrollView) return null;
     const { FormInput, FormRow, FormDivider } = Forms;
@@ -280,6 +411,12 @@
     const [displayName, setDisplayName] = React.useState(String(storage.displayName || ""));
     const [avatarUrl, setAvatarUrl] = React.useState(String(storage.imageUrl || ""));
     const [bannerUrl, setBannerUrl] = React.useState(String(storage.bannerUrl || ""));
+    const [bioText, setBioText] = React.useState(String(storage.bioText ?? ""));
+    const [bioEnabled, setBioEnabled] = React.useState(!!storage.bioEnabled);
+    const [presence, setPresence] = React.useState(configuredPresence());
+    const [statusEnabled, setStatusEnabled] = React.useState(!!storage.customStatusEnabled);
+    const [statusText, setStatusText] = React.useState(String(storage.customStatusText ?? ""));
+    const [statusEmoji, setStatusEmoji] = React.useState(String(storage.customStatusEmoji ?? ""));
 
     return React.createElement(
       RN.ScrollView,
@@ -326,7 +463,68 @@
       React.createElement(FormDivider),
 
       React.createElement(FormRow, {
-        label: "Saved automatically — v10",
+        label: bioEnabled ? "Bio locale : activée" : "Bio locale : désactivée",
+        subLabel: "Toucher pour activer/désactiver. Visible uniquement sur cet appareil.",
+        onPress: () => { const next = !bioEnabled; setBioEnabled(next); storage.bioEnabled = next; }
+      }),
+      React.createElement(FormInput, {
+        placeholder: "Écris la bio locale ici…",
+        value: bioText,
+        multiline: true,
+        numberOfLines: 5,
+        onChange: v => { setBioText(v); storage.bioText = v; }
+      }),
+      React.createElement(FormRow, {
+        label: "Bio enregistrée automatiquement",
+        subLabel: "Ferme puis rouvre le profil. Une bio vide et activée masque la bio originale. Texte simple, sans mise en forme Markdown."
+      }),
+      React.createElement(FormRow, {
+        label: "État de la bio",
+        subLabel: "Toucher pour vérifier si le composant est trouvé et appelé.",
+        onPress: () => RN.Alert?.alert("Diagnostic bio", bioTargets.length
+          ? `${bioTargets.join(", ")}\nAppels : ${bioStats.calls}\nRemplacements : ${bioStats.replacements}`
+          : "Aucun des composants connus n’a été trouvé dans cette version de Discord.")
+      }),
+      React.createElement(FormDivider),
+      React.createElement(FormRow, {
+        label: `Présence locale : ${presenceLabels[presence]}`,
+        subLabel: "Toucher pour passer à : originale → en ligne → inactif → ne pas déranger → hors ligne.",
+        onPress: () => {
+          const values = ["", "online", "idle", "dnd", "offline"];
+          const next = values[(values.indexOf(configuredPresence()) + 1) % values.length];
+          storage.localPresence = next;
+          setPresence(next);
+        }
+      }),
+      React.createElement(FormRow, {
+        label: statusEnabled ? "Statut personnalisé local : activé" : "Statut personnalisé local : désactivé",
+        subLabel: "Toucher pour activer/désactiver le texte et l’emoji ci-dessous.",
+        onPress: () => { const next = !storage.customStatusEnabled; storage.customStatusEnabled = next; setStatusEnabled(next); }
+      }),
+      React.createElement(FormInput, {
+        placeholder: "Texte du statut personnalisé",
+        value: statusText,
+        onChange: v => { setStatusText(v); storage.customStatusText = v; }
+      }),
+      React.createElement(FormInput, {
+        placeholder: "Emoji du clavier, par exemple 💙",
+        value: statusEmoji,
+        onChange: v => { setStatusEmoji(v); storage.customStatusEmoji = v; }
+      }),
+      React.createElement(FormRow, {
+        label: "Présence et statut enregistrés automatiquement",
+        subLabel: "Rouvre le profil pour actualiser. Originale/désactivé rétablit l’affichage réel. Un statut activé avec deux champs vides masque le statut personnalisé."
+      }),
+      React.createElement(FormRow, {
+        label: "État du statut et de la présence",
+        subLabel: "Si rien ne change, ouvre le profil puis touche ici et envoie une capture.",
+        onPress: () => RN.Alert?.alert("Diagnostic statut / présence", statusStats.found.length
+          ? statusStats.found.map(name => `${name} : ${statusStats.calls[name]} appels ciblés, ${statusStats.replacements[name]} remplacements`).join("\n") + `\nFormats d’activités non reconnus : ${statusStats.unsupportedActivities}`
+          : "PresenceStore ou ses méthodes de lecture n’ont pas été trouvés dans cette version de Discord.")
+      }),
+      React.createElement(FormDivider),
+      React.createElement(FormRow, {
+        label: "Saved automatically — v12",
         subLabel: "Reload after avatar/name edits. Close and reopen profiles after banner edits."
       }),
       React.createElement(FormRow, {
@@ -349,12 +547,20 @@
       if (!storage) return;
       applyAvatarPatch();
       attempt(applyBannerPatch);
+      attempt(applyBioPatch);
+      attempt(applyStatusPatches);
       applyNamePatch();
-      try { logger.log("Local Profiles v10 loaded"); } catch {}
+      try { logger.log("Local Profiles v12 loaded"); } catch {}
     },
 
     onUnload() {
       stopCapture();
+      while (statusPatches.length) attempt(() => statusPatches.pop()());
+      statusStats.found.length = 0;
+      activitiesCache = new WeakMap();
+      activitiesConfig = "";
+      while (bioPatches.length) attempt(() => bioPatches.pop()());
+      bioTargets.length = 0;
       while (bannerPatches.length) attempt(() => bannerPatches.pop()());
       bannerSeen = new WeakSet();
       while (unpatches.length) {
